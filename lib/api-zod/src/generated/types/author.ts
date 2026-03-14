@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface Author {
+  id: string;
+  username: string;
+  /** @nullable */
+  avatar_url: string | null;
 }
