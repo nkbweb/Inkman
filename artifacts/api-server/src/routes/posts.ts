@@ -15,25 +15,17 @@ router.get("/", optionalAuth, async (req: AuthRequest, res) => {
     let query = supabase
       .from("posts")
       .select(
-        `
-        id, title, content, excerpt, cover_image_url, category, published, created_at, updated_at,
+        `id, title, content, excerpt, cover_image_url, category, published, created_at, updated_at,
         likes_count, comments_count,
-        profiles!author_id ( id, username, avatar_url )
-      `,
+        profiles!author_id ( id, username, avatar_url )`,
         { count: "exact" }
       )
       .eq("published", true)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (category) {
-      query = query.eq("category", category);
-    }
-    if (search) {
-      query = query.or(
-        `title.ilike.%${search}%,content.ilike.%${search}%`
-      );
-    }
+    if (category) query = query.eq("category", category);
+    if (search) query = query.or(`title.ilike.%${search}%,content.ilike.%${search}%`);
 
     const { data: posts, error, count } = await query;
 
@@ -48,29 +40,25 @@ router.get("/", optionalAuth, async (req: AuthRequest, res) => {
         .from("post_likes")
         .select("post_id")
         .eq("user_id", req.userId);
-      if (likes) {
-        likedPostIds = new Set(likes.map((l) => l.post_id));
-      }
+      if (likes) likedPostIds = new Set(likes.map((l) => l.post_id));
     }
 
-    const formattedPosts = (posts || []).map((post: any) => ({
-      id: post.id,
-      title: post.title,
-      content: post.content,
-      excerpt: post.excerpt,
-      cover_image_url: post.cover_image_url,
-      category: post.category,
-      author: post.profiles,
-      likes_count: post.likes_count || 0,
-      comments_count: post.comments_count || 0,
-      is_liked: likedPostIds.has(post.id),
-      published: post.published,
-      created_at: post.created_at,
-      updated_at: post.updated_at,
-    }));
-
     res.json({
-      posts: formattedPosts,
+      posts: (posts || []).map((post: any) => ({
+        id: post.id,
+        title: post.title,
+        content: post.content,
+        excerpt: post.excerpt,
+        cover_image_url: post.cover_image_url,
+        category: post.category,
+        author: post.profiles,
+        likes_count: post.likes_count || 0,
+        comments_count: post.comments_count || 0,
+        is_liked: likedPostIds.has(post.id),
+        published: post.published,
+        created_at: post.created_at,
+        updated_at: post.updated_at,
+      })),
       total: count || 0,
       page,
       limit,
@@ -82,16 +70,18 @@ router.get("/", optionalAuth, async (req: AuthRequest, res) => {
 
 router.post("/", requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { title, content, excerpt, cover_image_url, category, published } =
-      req.body;
-    const { data: post, error } = await supabase
+    const { title, content, excerpt, cover_image_url, category, published } = req.body;
+    // Use the user's token so RLS auth.uid() resolves correctly
+    const db = supabaseWithAuth(req.userToken!);
+
+    const { data: post, error } = await db
       .from("posts")
       .insert({
         title,
         content,
-        excerpt,
-        cover_image_url,
-        category,
+        excerpt: excerpt || null,
+        cover_image_url: cover_image_url || null,
+        category: category || null,
         published: published ?? false,
         author_id: req.userId,
       })
@@ -108,8 +98,10 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     }
 
     res.status(201).json({
-      ...post,
+      ...(post as any),
       author: (post as any).profiles,
+      likes_count: 0,
+      comments_count: 0,
       is_liked: false,
     });
   } catch (e: any) {
@@ -161,24 +153,22 @@ router.get("/:id", optionalAuth, async (req: AuthRequest, res) => {
 router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const { title, content, excerpt, cover_image_url, category, published } =
-      req.body;
+    const { title, content, excerpt, cover_image_url, category, published } = req.body;
+    const db = supabaseWithAuth(req.userToken!);
 
-    const { data: existing } = await supabase
+    const { data: post, error } = await db
       .from("posts")
-      .select("author_id")
+      .update({
+        title,
+        content,
+        excerpt: excerpt || null,
+        cover_image_url: cover_image_url || null,
+        category: category || null,
+        published,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", id)
-      .single();
-
-    if (!existing || existing.author_id !== req.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const { data: post, error } = await supabase
-      .from("posts")
-      .update({ title, content, excerpt, cover_image_url, category, published, updated_at: new Date().toISOString() })
-      .eq("id", id)
+      .eq("author_id", req.userId!)
       .select(
         `id, title, content, excerpt, cover_image_url, category, published, created_at, updated_at,
         likes_count, comments_count,
@@ -187,13 +177,15 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
       .single();
 
     if (error) {
-      res.status(404).json({ error: error.message });
+      res.status(error.code === "PGRST116" ? 404 : 400).json({ error: error.message });
       return;
     }
 
     res.json({
       ...(post as any),
       author: (post as any).profiles,
+      likes_count: (post as any).likes_count || 0,
+      comments_count: (post as any).comments_count || 0,
       is_liked: false,
     });
   } catch (e: any) {
@@ -204,20 +196,16 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
 router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const { data: existing } = await supabase
+    const db = supabaseWithAuth(req.userToken!);
+
+    const { error } = await db
       .from("posts")
-      .select("author_id")
+      .delete()
       .eq("id", id)
-      .single();
+      .eq("author_id", req.userId!);
 
-    if (!existing || existing.author_id !== req.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const { error } = await supabase.from("posts").delete().eq("id", id);
     if (error) {
-      res.status(404).json({ error: error.message });
+      res.status(400).json({ error: error.message });
       return;
     }
 
@@ -230,6 +218,8 @@ router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
 router.post("/:id/like", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
+    const db = supabaseWithAuth(req.userToken!);
+
     const { data: existing } = await supabase
       .from("post_likes")
       .select("id")
@@ -238,30 +228,20 @@ router.post("/:id/like", requireAuth, async (req: AuthRequest, res) => {
       .single();
 
     if (existing) {
-      await supabase
-        .from("post_likes")
-        .delete()
-        .eq("post_id", id)
-        .eq("user_id", req.userId!);
+      await db.from("post_likes").delete().eq("post_id", id).eq("user_id", req.userId!);
       await supabase.rpc("decrement_likes", { post_id: id });
-      const { data: post } = await supabase
-        .from("posts")
-        .select("likes_count")
-        .eq("id", id)
-        .single();
-      res.json({ liked: false, likes_count: post?.likes_count || 0 });
     } else {
-      await supabase
-        .from("post_likes")
-        .insert({ post_id: id, user_id: req.userId! });
+      await db.from("post_likes").insert({ post_id: id, user_id: req.userId! });
       await supabase.rpc("increment_likes", { post_id: id });
-      const { data: post } = await supabase
-        .from("posts")
-        .select("likes_count")
-        .eq("id", id)
-        .single();
-      res.json({ liked: true, likes_count: post?.likes_count || 0 });
     }
+
+    const { data: post } = await supabase
+      .from("posts")
+      .select("likes_count")
+      .eq("id", id)
+      .single();
+
+    res.json({ liked: !existing, likes_count: post?.likes_count || 0 });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

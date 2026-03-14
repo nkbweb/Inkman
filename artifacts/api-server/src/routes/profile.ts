@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "@/lib/supabase";
+import { supabase, supabaseWithAuth } from "@/lib/supabase";
 import { requireAuth, AuthRequest } from "@/middlewares/auth";
 
 const router = Router();
@@ -13,7 +13,7 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
       .single();
 
     if (error || !profile) {
-      res.status(401).json({ error: "Profile not found" });
+      res.status(404).json({ error: "Profile not found" });
       return;
     }
 
@@ -36,7 +36,10 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
 router.patch("/", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { username, bio, avatar_url } = req.body;
-    const { data: profile, error } = await supabase
+    // Use authed client so RLS auth.uid() resolves
+    const db = supabaseWithAuth(req.userToken!);
+
+    const { data: profile, error } = await db
       .from("profiles")
       .update({ username, bio, avatar_url })
       .eq("id", req.userId!)
@@ -67,7 +70,8 @@ router.patch("/", requireAuth, async (req: AuthRequest, res) => {
 
 router.get("/posts", requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { data: posts, error, count } = await supabase
+    const db = supabaseWithAuth(req.userToken!);
+    const { data: posts, error, count } = await db
       .from("posts")
       .select(
         `id, title, content, excerpt, cover_image_url, category, published, created_at, updated_at,

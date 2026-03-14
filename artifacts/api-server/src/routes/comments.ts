@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "@/lib/supabase";
+import { supabaseWithAuth } from "@/lib/supabase";
 import { requireAuth, AuthRequest } from "@/middlewares/auth";
 
 const router = Router();
@@ -7,20 +7,17 @@ const router = Router();
 router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const { data: existing } = await supabase
+    // Use authed client so RLS auth.uid() resolves
+    const db = supabaseWithAuth(req.userToken!);
+
+    const { error } = await db
       .from("comments")
-      .select("author_id")
+      .delete()
       .eq("id", id)
-      .single();
+      .eq("author_id", req.userId!);
 
-    if (!existing || existing.author_id !== req.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const { error } = await supabase.from("comments").delete().eq("id", id);
     if (error) {
-      res.status(404).json({ error: error.message });
+      res.status(400).json({ error: error.message });
       return;
     }
 
