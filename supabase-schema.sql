@@ -87,34 +87,46 @@ ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE post_likes ENABLE ROW LEVEL SECURITY;
 
--- Profiles: anyone can read, only owner can write
+-- Profiles policies
 CREATE POLICY "Public profiles are viewable by everyone" ON profiles
   FOR SELECT USING (true);
+
+-- Allow users to insert their own profile (needed when trigger is absent)
+CREATE POLICY "Users can insert own profile" ON profiles
+  FOR INSERT WITH CHECK (auth.uid() = id);
+
 CREATE POLICY "Users can update own profile" ON profiles
   FOR UPDATE USING (auth.uid() = id);
 
--- Posts: published posts are public, own posts always visible
+-- Posts policies
 CREATE POLICY "Published posts are viewable by everyone" ON posts
   FOR SELECT USING (published = true OR auth.uid() = author_id);
+
 CREATE POLICY "Authenticated users can create posts" ON posts
   FOR INSERT WITH CHECK (auth.uid() = author_id);
+
 CREATE POLICY "Users can update own posts" ON posts
   FOR UPDATE USING (auth.uid() = author_id);
+
 CREATE POLICY "Users can delete own posts" ON posts
   FOR DELETE USING (auth.uid() = author_id);
 
--- Comments: anyone can read, auth users can create, owners can delete
+-- Comments policies
 CREATE POLICY "Comments are viewable by everyone" ON comments
   FOR SELECT USING (true);
+
 CREATE POLICY "Authenticated users can create comments" ON comments
   FOR INSERT WITH CHECK (auth.uid() = author_id);
+
 CREATE POLICY "Users can delete own comments" ON comments
   FOR DELETE USING (auth.uid() = author_id);
 
--- Post likes: anyone can read, auth users can manage their own
+-- Post likes policies
 CREATE POLICY "Likes are viewable by everyone" ON post_likes
   FOR SELECT USING (true);
+
 CREATE POLICY "Authenticated users can like posts" ON post_likes
   FOR INSERT WITH CHECK (auth.uid() = user_id);
+
 CREATE POLICY "Users can unlike posts" ON post_likes
   FOR DELETE USING (auth.uid() = user_id);
